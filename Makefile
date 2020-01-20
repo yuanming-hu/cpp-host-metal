@@ -1,6 +1,6 @@
 # Terribly handwritten makefile, use cmake
 CC=clang++
-CFLAGS=-I. -std=c++11
+CFLAGS=-std=c++11 -O2 -Wall -Wno-unused-function
 LDFLAGS=-framework Metal -framework CoreGraphics -framework Foundation
 BUILDDIR=build
 OBJDIR=$(BUILDDIR)
