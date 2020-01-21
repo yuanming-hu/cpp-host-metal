@@ -14,10 +14,13 @@
 //
 // All <Metal/*> headers are for Obj-C, we cannot import them.
 #include <iostream>
+#include <string>
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include <objc/message.h>
 #include <objc/objc.h>
 #include <objc/runtime.h>
-#include <string>
 
 extern "C" {
 void NSLog(id /* NSString * */ format, ...);
@@ -26,14 +29,26 @@ id MTLCreateSystemDefaultDevice();
 
 namespace {
 
+constexpr int kNSUTF8StringEncoding = 4;
 //  Need to have \n at the end, otherwise the compiled library is garbage...
 const char *kernel_src =
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
     "kernel void add1(device int* data [[ buffer(0) ]],\n"
     "                 const uint tid [[thread_position_in_grid]]) {\n"
-    "    data[tid] += 42;\n"
+    "    data[tid] += abs(-42);\n"
     "}\n";
+
+using NSString = objc_object;
+struct MTLDevice;
+struct MTLLibrary;
+struct MTLComputePipelineState;
+struct MTLCommandQueue;
+struct MTLCommandBuffer;
+struct MTLComputeCommandEncoder;
+struct MTLFunction;
+struct MTLComputePipelineState;
+struct MTLBuffer;
 
 template <typename O, typename C = id, typename... Args>
 C call(O *i, const char *select, Args... args) {
@@ -53,18 +68,10 @@ template <typename O> void release_ns_object(O *obj) {
   call(reinterpret_cast<id>(obj), "release");
 }
 
-constexpr int kNSUTF8StringEncoding = 4;
-
-using NSString = objc_object;
-struct MTLDevice;
-struct MTLLibrary;
-struct MTLComputePipelineState;
-struct MTLCommandQueue;
-struct MTLCommandBuffer;
-struct MTLComputeCommandEncoder;
-struct MTLFunction;
-struct MTLComputePipelineState;
-struct MTLBuffer;
+size_t roundup_to_pagesize(size_t s) {
+  const size_t pagesize = getpagesize();
+  return ((s + pagesize - 1) / pagesize) * pagesize;
+}
 
 MTLDevice *mtl_create_system_default_device() {
   id dev = MTLCreateSystemDefaultDevice();
@@ -136,7 +143,19 @@ void end_encoding(MTLComputeCommandEncoder *encoder) {
 }
 
 MTLBuffer *new_mtl_buffer(MTLDevice *device, size_t length) {
-  id buffer = call(device, "newBufferWithLength:options:", length, 0 /* MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeShared */);
+  constexpr int kMtlBufferResourceOptions = 0;
+  id buffer = call(device, "newBufferWithLength:options:", length,
+                   kMtlBufferResourceOptions);
+  return reinterpret_cast<MTLBuffer *>(buffer);
+}
+
+MTLBuffer *new_mtl_buffer_no_copy(MTLDevice *device, void *ptr, size_t length) {
+  // MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeShared
+  constexpr int kMtlBufferResourceOptions = 0;
+
+  id buffer =
+      call(device, "newBufferWithBytesNoCopy:length:options:deallocator:", ptr,
+           length, kMtlBufferResourceOptions, nullptr);
   return reinterpret_cast<MTLBuffer *>(buffer);
 }
 
@@ -188,6 +207,24 @@ void *mtl_buffer_contents(MTLBuffer *buffer) {
   return call(buffer, "contents");
 }
 
+class VMRaii {
+public:
+  explicit VMRaii(size_t size) : size_(roundup_to_pagesize(size)) {
+    ptr_ = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, /*fd=*/-1,
+                /*offset=*/0);
+  }
+
+  size_t size() const { return size_; }
+  void *ptr() const { return ptr_; }
+
+  ~VMRaii() { munmap(ptr_, size_); }
+
+private:
+  const size_t size_;
+  void *ptr_;
+};
+
 } // namespace
 
 int main() {
@@ -210,7 +247,14 @@ int main() {
 
   constexpr size_t kBufferLen = 128;
   constexpr size_t kBufferBytesLen = sizeof(int32_t) * kBufferLen;
-  MTLBuffer *mtl_buffer = new_mtl_buffer(device, kBufferBytesLen);
+  VMRaii vmr(kBufferBytesLen);
+  void *const vm_ptr = vmr.ptr();
+  std::cout << "vm_ptr=" << vm_ptr << " requested=" << kBufferBytesLen
+            << " got=" << vmr.size() << "\n";
+
+  // MTLBuffer *mtl_buffer = new_mtl_buffer(device, kBufferBytesLen);
+  MTLBuffer *mtl_buffer =
+      new_mtl_buffer_no_copy(device, vm_ptr, vmr.size());
   std::cout << "mtl_buffer=" << mtl_buffer << "\n";
 
   MTLCommandQueue *cmd_queue = new_command_queue(device);
@@ -239,9 +283,9 @@ int main() {
   wait_until_completed(cmd_buffer);
   std::cout << "wait_until_completed done\n";
 
-  int32_t *buffer_contents =
-      reinterpret_cast<int32_t *>(mtl_buffer_contents(mtl_buffer));
-  
+  // int32_t *buffer_contents =
+  //     reinterpret_cast<int32_t *>(mtl_buffer_contents(mtl_buffer));
+  int32_t *buffer_contents = reinterpret_cast<int32_t *>(vm_ptr);
   for (int i = 0; i < kBufferLen; ++i) {
     std::cout << "mtl_buffer[" << i << "]=" << buffer_contents[i] << "\n";
   }
