@@ -5,10 +5,11 @@ LDFLAGS=-framework Metal -framework CoreGraphics -framework Foundation
 BUILDDIR=build
 OBJDIR=$(BUILDDIR)
 OBJ=$(OBJDIR)/main.o
+BINARY=mtl.app
 
 
 all: $(OBJ)
-	$(CC) -o app $(OBJ) $(LDFLAGS)
+	$(CC) -o $(BINARY) $(OBJ) $(LDFLAGS)
 
 
 $(OBJDIR)/%.o: %.cpp
@@ -17,4 +18,4 @@ $(OBJDIR)/%.o: %.cpp
 .PHONY: clean
 
 clean:
-	rm -f $(BUILDDIR)/* app
+	rm -f $(BUILDDIR)/* $(BINARY)
